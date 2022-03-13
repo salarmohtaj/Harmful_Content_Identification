@@ -21,16 +21,16 @@ device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 
 # data_dir = "../Data/hate_speech/final_data/1/"
-data_dir = "../Data/fake_news/final_data/1/"
+# data_dir = "../Data/fake_news/final_data/1/"
 
 
 bert_model_name = "bert-base-uncased"
-MAX_LEN = 128
-BATCH_SIZE = 32
-N_EPOCHS = 5
+MAX_LEN = 256
+BATCH_SIZE = 64
+N_EPOCHS = 50
 learning_rate = 0.001
-hidden_size = 256
-dropout = 0.5
+hidden_size = 128
+dropout = 0.7
 
 
 destination_folder = "Model/BERT"
@@ -82,26 +82,6 @@ label_field = LabelField(is_target=True, dtype=torch.float)
 
 fields = [('text', text_field), ('label', label_field)]
 
-dataset, test = TabularDataset.splits(path=data_dir,
-                                                train="train.tsv", test="test.tsv",
-                                                format='tsv', skip_header=True, fields=fields)
-train, valid = dataset.split([0.875, 0.125], stratified=True)
-
-print(f'the train, validation and test sets includes {len(train)},{len(valid)} and {len(test)} instances, respectively')
-
-text_field.build_vocab(train, min_freq=2, vectors="glove.6B.300d")
-# text_field.build_vocab(train, min_freq=2)
-label_field.build_vocab(train)
-
-# text_field.vocab.stoi = tokenizer.vocab
-# text_field.vocab.itos = list(tokenizer.vocab)
-
-print(label_field.vocab.stoi)
-
-
-train_iter = BucketIterator(train, batch_size=BATCH_SIZE, sort_key=lambda x: len(x.text),device=device, sort=True, sort_within_batch=True)
-valid_iter = BucketIterator(valid, batch_size=BATCH_SIZE, sort_key=lambda x: len(x.text),device=device, sort=True, sort_within_batch=True)
-test_iter = BucketIterator(test, batch_size=BATCH_SIZE, sort_key=lambda x: len(x.text),device=device, sort=True, sort_within_batch=True)
 
 bert = BertModel.from_pretrained(bert_model_name)
 
@@ -140,9 +120,7 @@ class BiGRU_Model(nn.Module):
         # return output
         return torch.sigmoid(output)
 
-input_size = len(text_field.vocab)
-embedding_dim = 300
-model = BiGRU_Model(bert, hidden_size, dropout)
+
 
 # Save and Load Functions
 def save_checkpoint(save_path, model, optimizer, valid_loss):
@@ -180,29 +158,6 @@ def load_metrics(load_path):
     return state_dict['train_loss_list'], state_dict['valid_loss_list'], state_dict['epoch_counter_list']
 
 
-print("###################################")
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-print(f'The model has {count_parameters(model):,} parameters')
-
-for name, param in model.named_parameters():
-    if name.startswith('bert'):
-        print(name)
-        param.requires_grad = False
-
-model.embedding.weight.requires_grad = False
-
-print(f'The model has {count_parameters(model):,} trainable parameters')
-print("###################################")
-
-
-# optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-optimizer = optim.Adam([param for param in model.parameters() if param.requires_grad == True],lr=learning_rate)
-criterion = nn.BCELoss()
-model = model.to(device)
-criterion = criterion.to(device)
-
 def binary_accuracy(preds, y):
     #rounded_preds = torch.round(torch.sigmoid(preds))
     #rounded_preds = torch.round(preds)
@@ -211,7 +166,7 @@ def binary_accuracy(preds, y):
     acc = correct.sum() / len(correct)
     return acc
 
-def train(model, iterator, optimizer, criterion):
+def train_def(model, iterator, optimizer, criterion):
     epoch_loss = 0
     epoch_acc = 0
     model.train()
@@ -252,55 +207,7 @@ def epoch_time(start_time, end_time):
     elapsed_secs = int(elapsed_time - (elapsed_mins * 60))
     return elapsed_mins, elapsed_secs
 
-best_valid_loss = float('inf')
-training_stats = []
-train_loss_list = []
-valid_loss_list = []
-epoch_counter_list = []
-last_best_loss = 0
 
-for epoch in range(N_EPOCHS):
-    start_time = time.time()
-    train_loss, train_acc = train(model, train_iter, optimizer, criterion)
-    end_time = time.time()
-    epoch_mins, epoch_secs = epoch_time(start_time, end_time)
-    valid_loss, valid_acc = evaluate(model, valid_iter, criterion)
-    train_loss_list.append(train_loss)
-    valid_loss_list.append(valid_loss)
-    epoch_counter_list.append(epoch)
-    print(f'Epoch: {epoch + 1:02}/{N_EPOCHS} | Epoch Time: {epoch_mins}m {epoch_secs}s')
-    print(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc * 100:.2f}%')
-    print(f'\tVal. Loss: {valid_loss:.3f} |  Val. Acc: {valid_acc * 100:.2f}%')
-    with open(report_address, "a") as f:
-        f.write("Epoch "+str(epoch+1)+"\n")
-        f.write("Train Loss: "+str(train_loss)+"\tTrain Acc"+str(train_acc)+"\n")
-        f.write("Val. Loss: " + str(valid_loss) + "\tVal. Acc" + str(valid_acc)+"\n")
-    if valid_loss < best_valid_loss:
-        last_best_loss = epoch
-        print("\t---> Saving the model <---")
-        best_valid_loss = valid_loss
-        ##torch.save(model.state_dict(), 'tut6-model.pt')
-        save_checkpoint(destination_folder + '/model.pt', model, optimizer, best_valid_loss)
-        save_metrics(destination_folder + '/metrics.pt', train_loss_list, valid_loss_list, epoch_counter_list)
-    training_stats.append(
-        {
-            'epoch': epoch + 1,
-            'Training Loss': train_loss,
-            'Valid. Loss': valid_loss,
-            'Training Accuracy': train_acc,
-            #'Valid. Accur.': avg_val_accuracy,
-            'Training Time': epoch_mins,
-        }
-    )
-    if ((epoch - last_best_loss) > 9):
-        print("################")
-        print("Termination because of lack of improvement in the last 10 epochs")
-        print("################")
-        with open(report_address, "a") as f:
-            f.write("Termination because of lack of improvement in the last 10 epochs\n")
-        break
-save_metrics(destination_folder + '/metrics.pt', train_loss_list, valid_loss_list, epoch_counter_list)
-print('Finished Training!')
 
 
 def test_evaluation(bestmodel, test_loader):
@@ -318,15 +225,128 @@ def test_evaluation(bestmodel, test_loader):
             y_pred.extend(output.tolist())
             y_true.extend(labels.tolist())
 
-    print('Classification Report:')
-    classificationreport = classification_report(y_true, y_pred, target_names=label_field.vocab.itos, digits=4)
-    print(classificationreport)
+    # print('Classification Report:')
+    # classificationreport = classification_report(y_true, y_pred, target_names=label_field.vocab.itos, digits=4)
+    # print(classificationreport)
     with open(report_address, "a") as f:
         f.write("Classification Report:\n")
-        f.write(str(classificationreport) + "\n")
+        # f.write(str(classificationreport) + "\n")
+    return(y_pred,y_true)
 
 
-best_model = BiGRU_Model(bert, hidden_size, dropout).to(device)
-load_checkpoint(destination_folder + '/model.pt', best_model, optimizer)
-optimizer = optim.Adam([param for param in model.parameters() if param.requires_grad == True],lr=learning_rate)
-test_evaluation(best_model, test_iter)
+y_pred = []
+y_true = []
+data_dir = "../Data/fake_news/final_data/"
+# data_dir = "../Data/hate_speech/final_data/"
+
+for fold in range(5):
+    dataset, test = TabularDataset.splits(path=data_dir+str(fold+1)+"/",
+                                          train="train.tsv", test="test.tsv",
+                                          format='tsv', skip_header=True, fields=fields)
+    train, valid = dataset.split([0.875, 0.125], stratified=True)
+
+    print(f'the train, validation and test sets includes {len(train)},{len(valid)} and {len(test)} instances, respectively')
+
+    text_field.build_vocab(train, min_freq=2, vectors="glove.6B.300d")
+    # text_field.build_vocab(train, min_freq=2)
+    label_field.build_vocab(train)
+
+    # text_field.vocab.stoi = tokenizer.vocab
+    # text_field.vocab.itos = list(tokenizer.vocab)
+
+    print(label_field.vocab.stoi)
+
+    train_iter = BucketIterator(train, batch_size=BATCH_SIZE, sort_key=lambda x: len(x.text), device=device, sort=True,
+                                sort_within_batch=True)
+    valid_iter = BucketIterator(valid, batch_size=BATCH_SIZE, sort_key=lambda x: len(x.text), device=device, sort=True,
+                                sort_within_batch=True)
+    test_iter = BucketIterator(test, batch_size=BATCH_SIZE, sort_key=lambda x: len(x.text), device=device, sort=True,
+                               sort_within_batch=True)
+
+    input_size = len(text_field.vocab)
+    embedding_dim = 300
+    model = BiGRU_Model(bert, hidden_size, dropout)
+    print("###################################")
+
+
+    def count_parameters(model):
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+    print(f'The model has {count_parameters(model):,} parameters')
+
+    for name, param in model.named_parameters():
+        if name.startswith('bert'):
+            print(name)
+            param.requires_grad = False
+
+    model.embedding.weight.requires_grad = False
+
+    print(f'The model has {count_parameters(model):,} trainable parameters')
+    print("###################################")
+
+    # optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.Adam([param for param in model.parameters() if param.requires_grad == True], lr=learning_rate)
+    criterion = nn.BCELoss()
+    model = model.to(device)
+    criterion = criterion.to(device)
+
+    best_valid_loss = float('inf')
+    training_stats = []
+    train_loss_list = []
+    valid_loss_list = []
+    epoch_counter_list = []
+    last_best_loss = 0
+
+    for epoch in range(N_EPOCHS):
+        start_time = time.time()
+        train_loss, train_acc = train_def(model, train_iter, optimizer, criterion)
+        end_time = time.time()
+        epoch_mins, epoch_secs = epoch_time(start_time, end_time)
+        valid_loss, valid_acc = evaluate(model, valid_iter, criterion)
+        train_loss_list.append(train_loss)
+        valid_loss_list.append(valid_loss)
+        epoch_counter_list.append(epoch)
+        print(f'Epoch: {epoch + 1:02}/{N_EPOCHS} | Epoch Time: {epoch_mins}m {epoch_secs}s')
+        print(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc * 100:.2f}%')
+        print(f'\tVal. Loss: {valid_loss:.3f} |  Val. Acc: {valid_acc * 100:.2f}%')
+        with open(report_address, "a") as f:
+            f.write("Epoch " + str(epoch + 1) + "\n")
+            f.write("Train Loss: " + str(train_loss) + "\tTrain Acc" + str(train_acc) + "\n")
+            f.write("Val. Loss: " + str(valid_loss) + "\tVal. Acc" + str(valid_acc) + "\n")
+        if valid_loss < best_valid_loss:
+            last_best_loss = epoch
+            print("\t---> Saving the model <---")
+            best_valid_loss = valid_loss
+            ##torch.save(model.state_dict(), 'tut6-model.pt')
+            save_checkpoint(destination_folder + '/model.pt', model, optimizer, best_valid_loss)
+            save_metrics(destination_folder + '/metrics.pt', train_loss_list, valid_loss_list, epoch_counter_list)
+        training_stats.append(
+            {
+                'epoch': epoch + 1,
+                'Training Loss': train_loss,
+                'Valid. Loss': valid_loss,
+                'Training Accuracy': train_acc,
+                # 'Valid. Accur.': avg_val_accuracy,
+                'Training Time': epoch_mins,
+            }
+        )
+        if ((epoch - last_best_loss) > 9):
+            print("################")
+            print("Termination because of lack of improvement in the last 10 epochs")
+            print("################")
+            with open(report_address, "a") as f:
+                f.write("Termination because of lack of improvement in the last 10 epochs\n")
+            break
+    save_metrics(destination_folder + '/metrics.pt', train_loss_list, valid_loss_list, epoch_counter_list)
+    print('Finished Training!')
+
+    best_model = BiGRU_Model(bert, hidden_size, dropout).to(device)
+    load_checkpoint(destination_folder + '/model.pt', best_model, optimizer)
+    optimizer = optim.Adam([param for param in model.parameters() if param.requires_grad == True],lr=learning_rate)
+    y_p, y_t = test_evaluation(best_model, test_iter)
+    y_pred.extend(y_p)
+    y_true.extend(y_t)
+print('Classification Report:')
+classificationreport = classification_report(y_true, y_pred, target_names=label_field.vocab.itos, digits=4)
+print(classificationreport)
